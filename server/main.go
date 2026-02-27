@@ -27,7 +27,12 @@ type UpdatePacket struct {
 // In-memory storage for received updates.
 var (
 	receivedUpdates []UpdatePacket
-	mu               sync.Mutex
+	mu              sync.Mutex
+
+	// Global model state
+	globalWeights    []float64
+	currentVersion   int
+	aggregationMutex sync.Mutex
 )
 
 func main() {
@@ -36,6 +41,9 @@ func main() {
 
 	// GET /updates_count
 	http.HandleFunc("/updates_count", handleUpdatesCount)
+
+	// GET /global_model
+	http.HandleFunc("/global_model", handleGetGlobalModel)
 
 	port := ":8080"
 	fmt.Printf("Server starting on port %s...\n", port)
@@ -59,9 +67,7 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 	// Validate fields
 	if len(packet.Weights) == 0 ||
 		packet.Metadata.HospitalID == "" ||
-		packet.Metadata.DataSize <= 0 ||
-		packet.Metadata.RoundID < 0 ||
-		packet.Metadata.ModelVersion < 0 {
+		packet.Metadata.DataSize <= 0 {
 		http.Error(w, "Missing or invalid required fields", http.StatusBadRequest)
 		return
 	}
@@ -72,7 +78,12 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 	count := len(receivedUpdates)
 	mu.Unlock()
 
-	log.Printf("Received update from %s", packet.Metadata.HospitalID)
+	log.Printf("Received update from %s (Total: %d/3)", packet.Metadata.HospitalID, count)
+
+	// Trigger aggregation if quorum met (3 updates)
+	if count >= 3 {
+		go aggregateUpdates()
+	}
 
 	// Return success response
 	w.Header().Set("Content-Type", "application/json")
@@ -82,12 +93,62 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handleUpdatesCount(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func aggregateUpdates() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(receivedUpdates) < 3 {
 		return
 	}
 
+	log.Println("Quorum met. Starting aggregation...")
+
+	// Initialise with weights from the first packet
+	numWeights := len(receivedUpdates[0].Weights)
+	sumWeights := make([]float64, numWeights)
+
+	for _, packet := range receivedUpdates {
+		for i, w := range packet.Weights {
+			sumWeights[i] += w
+		}
+	}
+
+	// Average weights
+	numUpdates := float64(len(receivedUpdates))
+	newWeights := make([]float64, numWeights)
+	for i, sum := range sumWeights {
+		newWeights[i] = sum / numUpdates
+	}
+
+	// Update global state
+	aggregationMutex.Lock()
+	globalWeights = newWeights
+	currentVersion++
+	aggregationMutex.Unlock()
+
+	// Clear received updates for next round
+	receivedUpdates = nil
+
+	log.Printf("Aggregation successful. New Model Version: %d", currentVersion)
+}
+
+func handleGetGlobalModel(w http.ResponseWriter, r *http.Request) {
+	aggregationMutex.Lock()
+	defer aggregationMutex.Unlock()
+
+	if globalWeights == nil {
+		http.Error(w, "Global model not yet initialised", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"weights":       globalWeights,
+		"model_version": currentVersion,
+	})
+}
+
+func handleUpdatesCount(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	count := len(receivedUpdates)
 	mu.Unlock()
