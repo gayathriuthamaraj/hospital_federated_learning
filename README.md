@@ -42,6 +42,15 @@ Where staleness is the difference between the current model version and the vers
 
 Rounds progress through defined states: waiting for participation, aggregating updates, and completing before the next round begins.
 
+The `RoundManager` (implemented in `server/round_manager.go`) is the concrete realisation of this concept. It tracks:
+
+- `current_round` — the monotonically incrementing round number
+- `expected_clients` — the quorum threshold (default: 3)
+- `received_clients` — the set of hospital IDs that have submitted in the current round
+- `state` — one of `WAITING`, `AGGREGATING`, or `COMPLETE`
+
+Aggregation fires only when `len(received_clients) >= expected_clients`. Duplicate submissions from the same hospital within a round are rejected, as are submissions that reference the wrong round ID.
+
 ---
 
 ## Secure Communication
@@ -85,3 +94,80 @@ This repeats until the model converges.
 This system combines federated optimization, secure distributed communication, timeline synchronization, staleness-aware aggregation, and quorum-based round control into a single coherent infrastructure. It is not simply federated learning — it is a production-oriented system that addresses the practical, security, and fairness challenges of deploying machine learning across real healthcare institutions.
 
 Potential extensions include cross-country hospital collaboration, edge medical devices, government health analytics, and real-time outbreak prediction.
+
+---
+
+## Implementation Status
+
+| Turn | Owner | Component | Status |
+|------|-------|-----------|--------|
+| 1 — A | Client Foundation | Local training, `UpdatePacket` generation (`step-01/`) | Done |
+| 2 — D | Communication Layer | REST server, `/submit_update`, packet validation (`server/`) | Done |
+| 3 — B | Aggregation | FedAvg in `aggregateUpdates()`, global model versioning (`server/`) | Done |
+| 4 — C | Round Control | `RoundManager`: quorum tracking, round lifecycle, duplicate rejection (`server/round_manager.go`) | Done |
+
+---
+
+## Project Structure
+
+```
+hospital_federated_learning/
+  Medicaldataset.csv          1 319-row patient dataset (8 features + label)
+  client_simulator.go         Standalone script: submits 3 update packets to the server
+
+  step-01/                    Turn 1 — client-side only (no networking)
+    main.go                   Runs 3 hospitals locally, prints UpdatePackets
+    hospital/
+      data.go                 CSV loader + per-partition min-max normalisation
+      model.go                Logistic regression (sigmoid + BCE loss)
+      trainer.go              Mini-batch SGD training loop
+      packet.go               UpdatePacket definition + GenerateUpdatePacket()
+
+  server/                     Turns 2 / 3 / 4 — central server
+    main.go                   HTTP server, request handlers, FedAvg aggregation
+    round_manager.go          RoundManager: round lifecycle and quorum control
+    go.mod
+```
+
+---
+
+## How to Run
+
+### Step 01 — local training only (no server needed)
+
+```bash
+cd step-01
+go run .
+```
+
+Prints three `UpdatePacket` JSON blobs with different `loss` values, confirming each hospital trained on a distinct data partition.
+
+### Server + client simulation
+
+Open two terminals from the project root.
+
+**Terminal 1 — start the server**
+
+```bash
+cd server
+go run .
+```
+
+**Terminal 2 — simulate three hospital submissions**
+
+```bash
+go run client_simulator.go
+```
+
+The simulator submits updates from H1, H2, and H3. After the third submission the `RoundManager` declares quorum, aggregation runs, the global model version increments, and round 1 opens automatically.
+
+---
+
+## Server API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/submit_update` | Hospital submits an `UpdatePacket`; validated and registered with `RoundManager` |
+| `GET` | `/global_model` | Returns aggregated weights and current model version |
+| `GET` | `/updates_count` | Returns the number of updates buffered for the current round |
+| `GET` | `/round_status` | Returns `current_round`, `expected_clients`, `received_clients`, and `state` |
