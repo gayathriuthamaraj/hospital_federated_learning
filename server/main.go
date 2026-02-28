@@ -33,6 +33,10 @@ var (
 	globalWeights    []float64
 	currentVersion   int
 	aggregationMutex sync.Mutex
+
+	// roundManager is the single source of truth for round lifecycle.
+	// Quorum is set to 3: aggregation fires only after 3 distinct hospitals submit.
+	roundManager = NewRoundManager(3)
 )
 
 func main() {
@@ -44,6 +48,9 @@ func main() {
 
 	// GET /global_model
 	http.HandleFunc("/global_model", handleGetGlobalModel)
+
+	// GET /round_status — inspect current round state (Turn 4 addition)
+	http.HandleFunc("/round_status", handleRoundStatus)
 
 	port := ":8080"
 	fmt.Printf("Server starting on port %s...\n", port)
@@ -72,24 +79,37 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store valid packet
+	// RoundManager validates this submission: checks round_id, prevents duplicates,
+	// and decides whether quorum has been reached.
+	accepted, quorumMet := roundManager.RecordUpdate(
+		packet.Metadata.HospitalID,
+		packet.Metadata.RoundID,
+	)
+	if !accepted {
+		http.Error(w, "Update rejected by RoundManager (wrong round, duplicate, or round closed)", http.StatusConflict)
+		return
+	}
+
+	// Store the packet only after RoundManager has accepted it.
 	mu.Lock()
 	receivedUpdates = append(receivedUpdates, packet)
 	count := len(receivedUpdates)
 	mu.Unlock()
 
-	log.Printf("Received update from %s (Total: %d/3)", packet.Metadata.HospitalID, count)
-
-	// Trigger aggregation if quorum met (3 updates)
-	if count >= 3 {
+	// Trigger aggregation only when RoundManager signals quorum.
+	if quorumMet {
 		go aggregateUpdates()
 	}
 
 	// Return success response
+	_, _, received, state := roundManager.Status()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":         "success",
-		"total_received": count,
+		"status":          "accepted",
+		"total_received":  count,
+		"round_received":  received,
+		"round_state":     state.String(),
+		"quorum_met":      quorumMet,
 	})
 }
 
@@ -130,6 +150,9 @@ func aggregateUpdates() {
 	receivedUpdates = nil
 
 	log.Printf("Aggregation successful. New Model Version: %d", currentVersion)
+
+	// Advance RoundManager so the next round is open for submissions.
+	roundManager.AdvanceRound()
 }
 
 func handleGetGlobalModel(w http.ResponseWriter, r *http.Request) {
@@ -156,5 +179,18 @@ func handleUpdatesCount(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"count": count,
+	})
+}
+
+// handleRoundStatus exposes the current RoundManager state for inspection.
+func handleRoundStatus(w http.ResponseWriter, r *http.Request) {
+	round, expected, received, state := roundManager.Status()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"current_round":    round,
+		"expected_clients": expected,
+		"received_clients": received,
+		"state":            state.String(),
 	})
 }
