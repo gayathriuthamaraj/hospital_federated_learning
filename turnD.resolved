@@ -1,0 +1,85 @@
+# TURN 6 — Security & Validation Layer
+
+Add packet signing, timestamp validation, and duplicate detection so the federated server rejects tampered, stale, or duplicate hospital updates.
+
+## Proposed Changes
+
+### Hospital Package (`step-01/hospital/`)
+
+#### [MODIFY] [packet.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/step-01/hospital/packet.go)
+
+1. **Change `Metadata.Timestamp`** from `string` → `int64` (Unix epoch). Update the JSON tag to `"timestamp"`.
+2. **Add `Signature string` field** to `UpdatePacket` with JSON tag `"signature"`.
+3. **Add `SignPacket()` method** — computes `SHA256(json(metadata) + SecretKey)` and stores result in `Signature`.
+4. **Define `SecretKey`** as a package-level constant (shared between client and server for this demo).
+5. In `GenerateUpdatePacket()`, set `Timestamp` to `time.Now().Unix()` and call `SignPacket()` before returning.
+
+> [!NOTE]
+> `trainer.go`, `data.go`, and `model.go` are **not modified** — training and aggregation logic stay untouched.
+
+---
+
+### Client Simulator
+
+#### [MODIFY] [client_simulator.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/client_simulator.go)
+
+1. **Add `Timestamp int64` to local `Metadata`** and `Signature string` to local `UpdatePacket`.
+2. **Add `signPacket()` function** — same SHA256 logic as the hospital package, using the same shared secret key.
+3. In the submission loop, set `Timestamp = time.Now().Unix()` and call `signPacket()` before marshalling.
+
+---
+
+### Server
+
+#### [NEW] [security.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/server/security.go)
+
+New file with two functions:
+
+- **`verifySignature(packet UpdatePacket) bool`** — recomputes `SHA256(json(metadata) + SecretKey)` and compares to `packet.Signature`.
+- **`validateTimestamp(packet UpdatePacket) bool`** — rejects packets whose `Timestamp` is more than 30 seconds behind `time.Now().Unix()`.
+
+Both use the same `SecretKey` constant.
+
+#### [MODIFY] [main.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/server/main.go)
+
+1. **Add `Timestamp int64` to `Metadata`** and `Signature string` to `UpdatePacket`**.
+2. **Update `handleSubmitUpdate()`** to run the security pipeline before the RoundManager check:
+   ```
+   Decode JSON
+   → verifySignature()   → 403 on failure
+   → validateTimestamp()  → 408 on failure
+   → basic field checks
+   → RoundManager (handles round ID + duplicate detection)
+   → Store + aggregate
+   ```
+
+> [!IMPORTANT]
+> Duplicate detection is already handled by `RoundManager.RecordUpdate()` via its `ReceivedClients` map. No separate `receivedClients` map is needed in `main.go` — the existing logic already rejects same-hospital same-round duplicates.
+
+---
+
+## Verification Plan
+
+### Automated Tests
+
+No existing test files were found. Instead we verify by building and running:
+
+1. **Build hospital package:**
+   ```
+   cd step-01 && go build ./...
+   ```
+2. **Build server:**
+   ```
+   cd server && go build ./...
+   ```
+3. **Integration test (manual via terminals):**
+   - Start server: `cd server && go run .`
+   - Run client simulator: `go run client_simulator.go`
+   - All 3 hospitals should be accepted (HTTP 200 with `"status":"accepted"`).
+
+### Manual Verification
+
+The user should confirm:
+- Server logs show signature verification passing for valid packets.
+- If a packet's signature were tampered with, the server would reject it (HTTP 403).
+- 30-second timestamp window is enforced.

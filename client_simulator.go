@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,10 @@ import (
 	"time"
 )
 
+// SecretKey is the shared key used for packet signing.
+// Must match the key used by the server for verification.
+const SecretKey = "federated_secret_2024"
+
 // Metadata carries everything the server needs to evaluate a hospital's update.
 type Metadata struct {
 	HospitalID   string  `json:"hospital_id"`
@@ -17,12 +23,22 @@ type Metadata struct {
 	Loss         float64 `json:"loss"`
 	RoundID      int     `json:"round_id"`
 	ModelVersion int     `json:"model_version"`
+	Timestamp    int64   `json:"timestamp"`
 }
 
 // UpdatePacket is the complete payload sent from a hospital to the server.
 type UpdatePacket struct {
-	Weights  []float64 `json:"weights"`
-	Metadata Metadata  `json:"metadata"`
+	Weights   []float64 `json:"weights"`
+	Metadata  Metadata  `json:"metadata"`
+	Signature string    `json:"signature"`
+}
+
+// signPacket computes SHA256(json(metadata) + SecretKey) and stores it
+// in the packet's Signature field.
+func signPacket(p *UpdatePacket) {
+	metaJSON, _ := json.Marshal(p.Metadata)
+	hash := sha256.Sum256(append(metaJSON, []byte(SecretKey)...))
+	p.Signature = hex.EncodeToString(hash[:])
 }
 
 // GlobalModelResponse is the shape returned by GET /global_model.
@@ -141,8 +157,12 @@ func main() {
 				Loss:         0.5 / float64(i),
 				RoundID:      roundID,
 				ModelVersion: roundID,
+				Timestamp:    time.Now().Unix(),
 			},
 		}
+
+		// Sign the packet before sending.
+		signPacket(&packet)
 
 		body, _ := json.Marshal(packet)
 		resp, err := http.Post(baseURL+"/submit_update", "application/json", bytes.NewBuffer(body))

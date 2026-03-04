@@ -16,12 +16,14 @@ type Metadata struct {
 	Loss         float64 `json:"loss"`
 	RoundID      int     `json:"round_id"`
 	ModelVersion int     `json:"model_version"`
+	Timestamp    int64   `json:"timestamp"`
 }
 
 // UpdatePacket is the complete hand-off from a hospital to the server.
 type UpdatePacket struct {
-	Weights  []float64 `json:"weights"`
-	Metadata Metadata  `json:"metadata"`
+	Weights   []float64 `json:"weights"`
+	Metadata  Metadata  `json:"metadata"`
+	Signature string    `json:"signature"`
 }
 
 // In-memory storage for received updates.
@@ -71,7 +73,20 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate fields
+	// ── Security pipeline ─────────────────────────────────────────────────
+	// Step 1: Verify cryptographic signature.
+	if !verifySignature(packet) {
+		http.Error(w, "Invalid packet signature", http.StatusForbidden)
+		return
+	}
+
+	// Step 2: Validate timestamp freshness.
+	if !validateTimestamp(packet) {
+		http.Error(w, "Packet timestamp is stale or invalid", http.StatusRequestTimeout)
+		return
+	}
+
+	// Step 3: Validate required fields.
 	if len(packet.Weights) == 0 ||
 		packet.Metadata.HospitalID == "" ||
 		packet.Metadata.DataSize <= 0 {
@@ -105,11 +120,11 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 	_, _, received, state := roundManager.Status()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":          "accepted",
-		"total_received":  count,
-		"round_received":  received,
-		"round_state":     state.String(),
-		"quorum_met":      quorumMet,
+		"status":         "accepted",
+		"total_received": count,
+		"round_received": received,
+		"round_state":    state.String(),
+		"quorum_met":     quorumMet,
 	})
 }
 

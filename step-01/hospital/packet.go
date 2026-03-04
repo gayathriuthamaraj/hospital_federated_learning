@@ -1,10 +1,16 @@
 package hospital
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
 )
+
+// SecretKey is a shared key used for HMAC-style packet signing.
+// In production this would be loaded from a secure vault or config.
+const SecretKey = "federated_secret_2024"
 
 // Metadata carries everything the server needs to evaluate and weight
 // a hospital's update without seeing any raw patient data.
@@ -14,15 +20,16 @@ type Metadata struct {
 	Loss         float64 `json:"loss"`
 	RoundID      int     `json:"round_id"`
 	ModelVersion int     `json:"model_version"`
-	Timestamp    string  `json:"timestamp"` // ISO-8601; used by the Timeline Manager in later steps
+	Timestamp    int64   `json:"timestamp"`
 }
 
 // UpdatePacket is the complete hand-off from a hospital to the server.
 // Weights is the flat serialisation produced by Model.FlatWeights().
 // Raw patient data is never included.
 type UpdatePacket struct {
-	Weights  []float64 `json:"weights"`
-	Metadata Metadata  `json:"metadata"`
+	Weights   []float64 `json:"weights"`
+	Metadata  Metadata  `json:"metadata"`
+	Signature string    `json:"signature"`
 }
 
 // HospitalConfig describes a hospital's identity and its dataset partition.
@@ -34,6 +41,18 @@ type HospitalConfig struct {
 	CSVPath      string // absolute or relative path to Medicaldataset.csv
 	StartIdx     int    // first row index for this hospital's partition
 	EndIdx       int    // one-past-last row index
+}
+
+// SignPacket computes a SHA256 signature over the metadata and stores it
+// in the Signature field.  Hash = SHA256( json(metadata) + SecretKey ).
+func (p *UpdatePacket) SignPacket() error {
+	metaJSON, err := json.Marshal(p.Metadata)
+	if err != nil {
+		return fmt.Errorf("sign packet: marshal metadata: %w", err)
+	}
+	hash := sha256.Sum256(append(metaJSON, []byte(SecretKey)...))
+	p.Signature = hex.EncodeToString(hash[:])
+	return nil
 }
 
 // GenerateUpdatePacket runs a full local training cycle and returns an UpdatePacket.
@@ -58,9 +77,15 @@ func GenerateUpdatePacket(globalModel *Model, cfg HospitalConfig) (*UpdatePacket
 			Loss:         loss,
 			RoundID:      cfg.RoundID,
 			ModelVersion: cfg.ModelVersion,
-			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			Timestamp:    time.Now().Unix(),
 		},
 	}
+
+	// Sign the packet before returning.
+	if err := packet.SignPacket(); err != nil {
+		return nil, fmt.Errorf("hospital %s: %w", cfg.ID, err)
+	}
+
 	return packet, nil
 }
 

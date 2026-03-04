@@ -1,0 +1,89 @@
+# TURN 6 — Security & Validation Layer — Walkthrough
+
+## Summary
+
+Added packet signing (SHA256), timestamp freshness validation, and duplicate detection to the hospital federated learning system. The server now rejects tampered, stale, or duplicate packets before accepting updates.
+
+## Changes Made
+
+### [NEW] [security.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/server/security.go)
+
+- [verifySignature(packet)](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/security.go#19-41) — recomputes `SHA256(json(metadata) + SecretKey)` and compares to `packet.Signature`
+- [validateTimestamp(packet)](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/security.go#42-64) — rejects packets older than 30 seconds (also rejects future timestamps)
+
+### [MODIFY] [packet.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/step-01/hospital/packet.go)
+
+- `Metadata.Timestamp` changed from `string` → `int64` (Unix epoch)
+- Added `Signature string` field to [UpdatePacket](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/main.go#23-28)
+- Added [SignPacket()](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/step-01/hospital/packet.go#46-57) method and `SecretKey` constant
+- [GenerateUpdatePacket()](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/step-01/hospital/packet.go#58-91) now sets timestamp and signs before returning
+
+render_diffs(file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/step-01/hospital/packet.go)
+
+### [MODIFY] [main.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/server/main.go)
+
+- Extended [Metadata](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/client_simulator.go#20-28) with `Timestamp int64` and [UpdatePacket](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/main.go#23-28) with `Signature string`
+- `/submit_update` handler pipeline: **Decode → Verify Signature → Validate Timestamp → Field Checks → RoundManager → Store**
+
+render_diffs(file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/server/main.go)
+
+### [MODIFY] [client_simulator.go](file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/client_simulator.go)
+
+- Added [Timestamp](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/security.go#42-64), [Signature](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/server/security.go#19-41), and [signPacket()](file:///c:/Users/SARIGASINI/OneDrive/Desktop/%EB%AC%B8%EC%84%9C/GitHub/hospital_federated_learning/client_simulator.go#36-43) function
+- Each packet is signed before submission
+
+render_diffs(file:///c:/Users/SARIGASINI/OneDrive/Desktop/문서/GitHub/hospital_federated_learning/client_simulator.go)
+
+## Security Pipeline
+
+```mermaid
+flowchart TD
+    A["Receive JSON Packet"] --> B{"verifySignature()"}
+    B -- "❌ Mismatch" --> R1["403 Forbidden"]
+    B -- "✅ Valid" --> C{"validateTimestamp()"}
+    C -- "❌ Stale (>30s)" --> R2["408 Request Timeout"]
+    C -- "✅ Fresh" --> D{"Field Validation"}
+    D -- "❌ Invalid" --> R3["400 Bad Request"]
+    D -- "✅ Valid" --> E{"RoundManager\n(round + duplicate check)"}
+    E -- "❌ Rejected" --> R4["409 Conflict"]
+    E -- "✅ Accepted" --> F["Store Update"]
+    F --> G{"Quorum Met?"}
+    G -- "Yes" --> H["Trigger Aggregation"]
+    G -- "No" --> I["200 OK — Waiting"]
+```
+
+## Verification Results
+
+### Build (all 3 modules) — ✅ Pass
+
+| Module | Command | Result |
+|---|---|---|
+| `step-01` (hospital) | `go build ./...` | ✅ Success |
+| `server` | `go build ./...` | ✅ Success |
+| `client_simulator` | `go build client_simulator.go` | ✅ Success |
+
+### Integration Test — ✅ Pass
+
+**Server logs** showing the full security pipeline:
+```
+[security] Signature verified for H1
+[security] Timestamp valid for H1 (age: 0s)
+[RoundManager] Round 0 — H1 submitted (1/3)
+[security] Signature verified for H2
+[security] Timestamp valid for H2 (age: 0s)
+[RoundManager] Round 0 — H2 submitted (2/3)
+[security] Signature verified for H3
+[security] Timestamp valid for H3 (age: 0s)
+[RoundManager] Round 0 — H3 submitted (3/3)
+[RoundManager] Quorum met (3/3). Triggering aggregation for round 0.
+Aggregation successful. New Model Version: 1
+[RoundManager] Advanced to round 1. Waiting for 3 clients.
+```
+
+**Client output** — all 3 hospitals accepted (HTTP 200), aggregation triggered, model updated to version 1:
+```
+[submit] H1 — HTTP 200 | status: accepted
+[submit] H2 — HTTP 200 | status: accepted
+[submit] H3 — HTTP 200 | status: accepted, quorum_met: true
+Final client state: ModelVersion=1 | Weights=[20 40]
+```
