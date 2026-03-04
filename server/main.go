@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sync"
 )
@@ -39,6 +40,9 @@ var (
 	// roundManager is the single source of truth for round lifecycle.
 	// Quorum is set to 3: aggregation fires only after 3 distinct hospitals submit.
 	roundManager = NewRoundManager(3)
+
+	// QFedAvg parameter (Turn 7)
+	qParam = 1.0
 )
 
 func main() {
@@ -132,27 +136,59 @@ func aggregateUpdates() {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(receivedUpdates) < 3 {
+	if len(receivedUpdates) == 0 {
 		return
 	}
 
-	log.Println("Quorum met. Starting aggregation...")
+	log.Printf("Quorum met. Starting QFedAvg aggregation (q=%.2f)...", qParam)
 
-	// Initialise with weights from the first packet
 	numWeights := len(receivedUpdates[0].Weights)
-	sumWeights := make([]float64, numWeights)
+	sumWeightedWeights := make([]float64, numWeights)
+	totalWeight := 0.0
 
 	for _, packet := range receivedUpdates {
-		for i, w := range packet.Weights {
-			sumWeights[i] += w
+		// QFedAvg Weighting: weight = (loss ^ q) * data_size
+		// We use math.Pow for the fairness exponent.
+		// To handle loss=0, we add a tiny epsilon for stability if needed,
+		// but standard QFedAvg usually handles positive loss.
+		lossTerm := packet.Metadata.Loss
+		if lossTerm < 0 {
+			lossTerm = 0 // Loss should not be negative
 		}
+
+		// weight_i = (loss_i ^ q) * data_size_i
+		// For simplicity, if loss is 0 and q > 0, weight is 0.
+		// If q = 0, this reverts to data_size weighting.
+		var lossPower float64
+		if lossTerm == 0 && qParam > 0 {
+			lossPower = 0 // If loss is 0 and q > 0, loss^q is 0.
+		} else if lossTerm == 0 && qParam == 0 {
+			lossPower = 1 // If loss is 0 and q = 0, loss^0 is 1.
+		} else {
+			lossPower = math.Pow(lossTerm, qParam)
+		}
+
+		weight := lossPower * float64(packet.Metadata.DataSize)
+
+		if weight <= 0 {
+			weight = 1e-6 // Avoid zero weight for participants to prevent division by zero or exclusion
+		}
+
+		for i, w := range packet.Weights {
+			sumWeightedWeights[i] += w * weight
+		}
+		totalWeight += weight
 	}
 
-	// Average weights
-	numUpdates := float64(len(receivedUpdates))
+	// Calculate weighted average
 	newWeights := make([]float64, numWeights)
-	for i, sum := range sumWeights {
-		newWeights[i] = sum / numUpdates
+	if totalWeight > 0 {
+		for i, sum := range sumWeightedWeights {
+			newWeights[i] = sum / totalWeight
+		}
+	} else {
+		log.Println("Warning: total weight is zero, skipping aggregation update")
+		return
 	}
 
 	// Update global state
