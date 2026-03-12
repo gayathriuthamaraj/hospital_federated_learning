@@ -40,8 +40,8 @@ var (
 	aggregationMutex sync.Mutex
 
 	// roundManager is the single source of truth for round lifecycle.
-	// Quorum is set to 3: aggregation fires only after 3 distinct hospitals submit.
-	roundManager = NewRoundManager(3)
+	// Quorum is set to 2: aggregation fires after 2 distinct hospitals submit.
+	roundManager = NewRoundManager(2)
 
 	// QFedAvg parameter (Turn 7)
 	qParam = 1.0
