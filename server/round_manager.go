@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sync"
+	"time"
 )
 
 // RoundState represents the current phase of a federated learning round.
@@ -44,6 +45,7 @@ type RoundManager struct {
 	ExpectedClients int
 	ReceivedClients map[string]bool // keyed by hospital_id to avoid duplicate counting
 	State           RoundState
+	RoundStartTime  time.Time
 }
 
 // NewRoundManager creates a RoundManager for round 0 with the given quorum size.
@@ -53,6 +55,7 @@ func NewRoundManager(quorum int) *RoundManager {
 		ExpectedClients: quorum,
 		ReceivedClients: make(map[string]bool),
 		State:           RoundWaiting,
+		RoundStartTime:  time.Now(),
 	}
 }
 
@@ -67,11 +70,15 @@ func (rm *RoundManager) RecordUpdate(hospitalID string, roundID int) (accepted b
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	// Reject updates that belong to a different round.
-	if roundID != rm.CurrentRound {
-		log.Printf("[RoundManager] Rejected update from %s: round mismatch (got %d, current %d)",
+	// Handle Late Updates: allow older rounds, but reject future rounds.
+	if roundID > rm.CurrentRound {
+		log.Printf("[RoundManager] Rejected update from %s: future round mismatch (got %d, current %d)",
 			hospitalID, roundID, rm.CurrentRound)
 		return false, false
+	}
+	if roundID < rm.CurrentRound {
+		log.Printf("[RoundManager] Accepted LATE update from %s: (got %d, current %d)",
+			hospitalID, roundID, rm.CurrentRound)
 	}
 
 	// Reject if aggregation already triggered for this round.
@@ -93,10 +100,10 @@ func (rm *RoundManager) RecordUpdate(hospitalID string, roundID int) (accepted b
 	log.Printf("[RoundManager] Round %d — %s submitted (%d/%d)",
 		rm.CurrentRound, hospitalID, received, rm.ExpectedClients)
 
-	if received >= rm.ExpectedClients {
+	if received >= rm.ExpectedClients || (received > 0 && time.Since(rm.RoundStartTime) > 15*time.Second) {
 		rm.State = RoundAggregating
-		log.Printf("[RoundManager] Quorum met (%d/%d). Triggering aggregation for round %d.",
-			received, rm.ExpectedClients, rm.CurrentRound)
+		log.Printf("[RoundManager] Quorum or timeout met (received %d). Triggering aggregation for round %d.",
+			received, rm.CurrentRound)
 		return true, true
 	}
 
@@ -112,6 +119,7 @@ func (rm *RoundManager) AdvanceRound() {
 	rm.CurrentRound++
 	rm.ReceivedClients = make(map[string]bool)
 	rm.State = RoundWaiting
+	rm.RoundStartTime = time.Now()
 
 	log.Printf("[RoundManager] Advanced to round %d. Waiting for %d clients.",
 		rm.CurrentRound, rm.ExpectedClients)

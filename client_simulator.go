@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -99,6 +100,12 @@ func syncModel(baseURL string, state *LocalClientState) bool {
 			serverModel.ModelVersion, state.ModelVersion)
 		state.ModelVersion = serverModel.ModelVersion
 		state.Weights = serverModel.Weights
+		
+		// Client Model Cache (DS concept)
+		cacheName := fmt.Sprintf("model_v%d.pkl", state.ModelVersion)
+		cacheData, _ := json.Marshal(serverModel)
+		os.WriteFile(cacheName, cacheData, 0644)
+		
 		log.Printf("[model-sync] Local model updated to version %d | weights: %v",
 			state.ModelVersion, state.Weights)
 		return true
@@ -118,11 +125,11 @@ func main() {
 		Weights:      nil,
 	}
 
-	// ── Phase 1: Pre-round model sync ────────────────────────────────────────
+	// ── Pre-round model sync ────────────────────────────────────────
 	// Download the global model before submitting so we train on the latest
 	// federated weights. On the very first run the server has nothing yet and
 	// syncModel will log a skip message.
-	fmt.Println("\n[Phase 1] Checking for global model before submitting...")
+	fmt.Println("\nChecking for global model before submitting...")
 	syncModel(baseURL, state)
 
 	// Map local model version to the round we will submit to.
@@ -132,8 +139,8 @@ func main() {
 		roundID = 0
 	}
 
-	// ── Phase 2: Submit hospital updates ─────────────────────────────────────
-	fmt.Printf("\n[Phase 2] Submitting round %d updates (model_version=%d)...\n", roundID, roundID)
+	// ── Submit hospital updates ─────────────────────────────────────
+	fmt.Printf("\nSubmitting round %d updates (model_version=%d)...\n", roundID, roundID)
 
 	for i := 1; i <= 3; i++ {
 		// Use downloaded global weights as the base if available; otherwise fall
@@ -164,6 +171,11 @@ func main() {
 		// Sign the packet before sending.
 		signPacket(&packet)
 
+		// Local Model Checkpoint (DS concept)
+		checkpointName := fmt.Sprintf("checkpoint_%s_round%d.pkl", packet.Metadata.HospitalID, roundID)
+		checkpointData, _ := json.Marshal(packet)
+		os.WriteFile(checkpointName, checkpointData, 0644)
+
 		body, _ := json.Marshal(packet)
 		resp, err := http.Post(baseURL+"/submit_update", "application/json", bytes.NewBuffer(body))
 		if err != nil {
@@ -176,11 +188,11 @@ func main() {
 			i, weights, roundID, resp.StatusCode, string(respBody))
 	}
 
-	// ── Phase 3: Wait for aggregation, then pull the new global model ─────────
-	fmt.Println("\n[Phase 3] Waiting for server aggregation...")
+	// ── Wait for aggregation, then pull the new global model ─────────
+	fmt.Println("\nWaiting for server aggregation...")
 	time.Sleep(300 * time.Millisecond)
 
-	fmt.Println("[Phase 3] Pulling updated global model after aggregation...")
+	fmt.Println("Pulling updated global model after aggregation...")
 	if syncModel(baseURL, state) {
 		log.Printf("[model-sync] Model updated to version %d. Client will train on version %d in the next round.",
 			state.ModelVersion, state.ModelVersion)

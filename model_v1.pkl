@@ -1,0 +1,1 @@
+{"weights":[10,20],"model_version":1}

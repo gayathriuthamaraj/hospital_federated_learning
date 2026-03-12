@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"sync"
 )
 
@@ -113,6 +114,18 @@ func handleSubmitUpdate(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	receivedUpdates = append(receivedUpdates, packet)
 	count := len(receivedUpdates)
+	
+	// Distributed Logging
+	logEntry, _ := json.Marshal(map[string]interface{}{
+		"hospital_id": packet.Metadata.HospitalID,
+		"round":       packet.Metadata.RoundID,
+		"timestamp":   packet.Metadata.Timestamp,
+	})
+	if f, err := os.OpenFile("update_log.json", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		f.Write(append(logEntry, '\n'))
+		f.Close()
+	}
+	
 	mu.Unlock()
 
 	// Trigger aggregation only when RoundManager signals quorum.
@@ -168,16 +181,23 @@ func aggregateUpdates() {
 			lossPower = math.Pow(lossTerm, qParam)
 		}
 
-		weight := lossPower * float64(packet.Metadata.DataSize)
+		qfed_weight := lossPower * float64(packet.Metadata.DataSize)
 
-		if weight <= 0 {
-			weight = 1e-6 // Avoid zero weight for participants to prevent division by zero or exclusion
+		// Staleness calculation
+		staleness := float64(currentVersion - packet.Metadata.ModelVersion)
+		if staleness < 0 {
+			staleness = 0
+		}
+		adjusted_weight := qfed_weight * (1.0 / (1.0 + staleness))
+
+		if adjusted_weight <= 0 {
+			adjusted_weight = 1e-6 // Avoid zero weight for participants to prevent division by zero or exclusion
 		}
 
 		for i, w := range packet.Weights {
-			sumWeightedWeights[i] += w * weight
+			sumWeightedWeights[i] += w * adjusted_weight
 		}
-		totalWeight += weight
+		totalWeight += adjusted_weight
 	}
 
 	// Calculate weighted average
@@ -195,6 +215,15 @@ func aggregateUpdates() {
 	aggregationMutex.Lock()
 	globalWeights = newWeights
 	currentVersion++
+	
+	// Global Model Snapshot
+	snapshotName := fmt.Sprintf("snapshot_round_%d.pkl", currentVersion)
+	snapshotData, _ := json.Marshal(map[string]interface{}{
+		"weights": globalWeights,
+		"version": currentVersion,
+	})
+	os.WriteFile(snapshotName, snapshotData, 0644)
+	
 	aggregationMutex.Unlock()
 
 	// Clear received updates for next round

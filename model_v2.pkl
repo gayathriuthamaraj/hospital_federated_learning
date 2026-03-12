@@ -1,0 +1,1 @@
+{"weights":[17.55,35.05],"model_version":2}

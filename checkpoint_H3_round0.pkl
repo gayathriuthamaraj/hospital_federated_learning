@@ -1,0 +1,1 @@
+{"weights":[30,60],"metadata":{"hospital_id":"H3","data_size":300,"loss":0.16666666666666666,"round_id":0,"model_version":0,"timestamp":1773255555},"signature":"d482042e1c118f163375f90e37e6e6b3a2be40331d017f89f625ab6c3d71beb8"}
