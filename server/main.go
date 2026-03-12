@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"math"
@@ -47,6 +48,9 @@ var (
 )
 
 func main() {
+	portFlag := flag.String("port", "8080", "Server port")
+	flag.Parse()
+
 	// POST /submit_update
 	http.HandleFunc("/submit_update", handleSubmitUpdate)
 
@@ -59,7 +63,7 @@ func main() {
 	// GET /round_status — inspect current round state (Turn 4 addition)
 	http.HandleFunc("/round_status", handleRoundStatus)
 
-	port := ":8080"
+	port := ":" + *portFlag
 	fmt.Printf("Server starting on port %s...\n", port)
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)

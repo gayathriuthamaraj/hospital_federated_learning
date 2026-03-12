@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -116,8 +117,11 @@ func syncModel(baseURL string, state *LocalClientState) bool {
 }
 
 func main() {
-	baseURL := "http://localhost:8080"
-	fmt.Println("=== Federated Client Simulator ===")
+	serverFlag := flag.String("server", "http://localhost:8080", "Server base URL")
+	flag.Parse()
+
+	baseURL := *serverFlag
+	fmt.Printf("=== Federated Client Simulator (Connecting to: %s) ===\n", baseURL)
 
 	// Initialise local state. ModelVersion -1 signals "never synced from server".
 	state := &LocalClientState{

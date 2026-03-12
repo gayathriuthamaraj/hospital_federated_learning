@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -61,7 +63,12 @@ func submitUpdate(hospitalID string, roundID int, modelVersion int, weights []fl
 }
 
 func main() {
-	fmt.Println("=== Starting Federation Round 0 ===")
+	serverFlag := flag.String("server", "http://localhost:8080", "Server base URL")
+	flag.Parse()
+
+	baseURL := *serverFlag
+	hospitalID := "H_SLOW_1"
+	fmt.Printf("=== Slow-Hospital Client (Connecting to: %s) ===\n", baseURL)
 	// Initial Round 0
 	submitUpdate("H1", 0, 0, []float64{10, 20}, 100, 0.5)
 	submitUpdate("H2", 0, 0, []float64{10, 20}, 100, 0.5)
